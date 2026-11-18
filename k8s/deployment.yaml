@@ -1,0 +1,124 @@
+# Minimal but honest manifests — tune limits, probes and resources for your cluster.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: uptime-sentinel-config
+  namespace: uptime-sentinel
+data:
+  PORT: "8080"
+  RETENTION_DAYS: "14"
+  LOG_LEVEL: "info"
+  NODE_ENV: "production"
+  SEED_TARGETS: ""
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: uptime-sentinel-secret
+  namespace: uptime-sentinel
+type: Opaque
+stringData:
+  # MUST be >= 8 chars; only used to authorize mutating API calls
+  ADMIN_TOKEN: "change-me-to-a-long-secret"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uptime-sentinel
+  namespace: uptime-sentinel
+  labels:
+    app: uptime-sentinel
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: uptime-sentinel
+  template:
+    metadata:
+      labels:
+        app: uptime-sentinel
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: uptime-sentinel
+          image: ghcr.io/YOUR_ORG/uptime-sentinel:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: uptime-sentinel-config
+                  key: PORT
+            - name: DB_PATH
+              value: /data/sentinel.db
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: uptime-sentinel-secret
+                  key: ADMIN_TOKEN
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: uptime-sentinel-config
+                  key: LOG_LEVEL
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: uptime-sentinel
+  namespace: uptime-sentinel
+spec:
+  type: ClusterIP
+  selector:
+    app: uptime-sentinel
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: uptime-sentinel-hpa
+  namespace: uptime-sentinel
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: uptime-sentinel
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
